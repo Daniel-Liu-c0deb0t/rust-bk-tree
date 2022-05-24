@@ -316,7 +316,9 @@ where
                 let min_dist = dist.saturating_sub(self.tolerance);
                 let max_dist = dist.saturating_add(self.tolerance);
                 for (dist, child_node) in children.iter() {
-                    if (!self.remove || flags.borrow().0) && min_dist <= *dist && *dist <= max_dist
+                    if (!self.remove || child_node.flags.borrow().0)
+                        && min_dist <= *dist
+                        && *dist <= max_dist
                     {
                         self.candidates.push_back(child_node);
                     }
@@ -337,12 +339,14 @@ where
                 }
             }
         }
-        for c in self.candidates.range(..idx).rev() {
-            let mut all_visited = c.flags.borrow().1;
-            for (_, child_node) in &mut c.children.iter() {
-                all_visited &= child_node.flags.borrow().0;
+        if self.remove {
+            for c in self.candidates.range(..idx).rev() {
+                let mut all_visited = c.flags.borrow().1;
+                for (_, child_node) in c.children.iter() {
+                    all_visited &= child_node.flags.borrow().0;
+                }
+                c.flags.borrow_mut().0 = all_visited;
             }
-            c.flags.borrow_mut().0 = all_visited;
         }
         self.candidates.drain(..idx);
         res
