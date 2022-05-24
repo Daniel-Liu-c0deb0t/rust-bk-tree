@@ -1,10 +1,11 @@
 pub mod metrics;
 
 use std::{
+    borrow::Borrow,
+    cell::RefCell,
+    collections::VecDeque,
     fmt::{Debug, Formatter, Result as FmtResult},
     iter::Extend,
-    borrow::Borrow,
-    collections::VecDeque,
 };
 
 #[cfg(feature = "enable-fnv")]
@@ -14,7 +15,6 @@ use fnv::FnvHashMap;
 
 #[cfg(not(feature = "enable-fnv"))]
 use std::collections::HashMap;
-
 
 /// A trait for a *metric* (distance function).
 ///
@@ -42,6 +42,7 @@ struct BKNode<K> {
     #[cfg(not(feature = "enable-fnv"))]
     children: HashMap<u32, BKNode<K>>,
     max_child_distance: Option<u32>,
+    flags: RefCell<(bool, bool)>,
 }
 
 impl<K> BKNode<K> {
@@ -54,6 +55,7 @@ impl<K> BKNode<K> {
             #[cfg(not(feature = "enable-fnv"))]
             children: HashMap::default(),
             max_child_distance: None,
+            flags: RefCell::new((false, false)),
         }
     }
 
@@ -188,11 +190,16 @@ where
     /// tree.add("fop");
     /// tree.add("bar");
     ///
-    /// assert_eq!(tree.find("foo", 0).collect::<Vec<_>>(), vec![(0, &"foo")]);
-    /// assert_eq!(tree.find("foo", 1).collect::<Vec<_>>(), vec![(0, &"foo"), (1, &"fop")]);
-    /// assert!(tree.find("foz", 0).next().is_none());
+    /// assert_eq!(tree.find("foo", 0, false).collect::<Vec<_>>(), vec![(0, &"foo")]);
+    /// assert_eq!(tree.find("foo", 1, false).collect::<Vec<_>>(), vec![(0, &"foo"), (1, &"fop")]);
+    /// assert!(tree.find("foz", 0, false).next().is_none());
     /// ```
-    pub fn find<'a, 'q, Q: ?Sized>(&'a self, key: &'q Q, tolerance: u32) -> Find<'a, 'q, K, Q, M>
+    pub fn find<'a, 'q, Q: ?Sized>(
+        &'a self,
+        key: &'q Q,
+        tolerance: u32,
+        remove: bool,
+    ) -> Find<'a, 'q, K, Q, M>
     where
         K: Borrow<Q>,
         M: Metric<Q>,
@@ -207,6 +214,7 @@ where
             tolerance,
             metric: &self.metric,
             key,
+            remove,
         }
     }
 
@@ -233,7 +241,9 @@ where
         K: Borrow<Q>,
         M: Metric<Q>,
     {
-        self.find(key, 0).next().map(|(_, found_key)| found_key)
+        self.find(key, 0, false)
+            .next()
+            .map(|(_, found_key)| found_key)
     }
 }
 
@@ -273,6 +283,7 @@ pub struct Find<'a, 'q, K: 'a, Q: 'q + ?Sized, M: 'a> {
     tolerance: u32,
     metric: &'a M,
     key: &'q Q,
+    remove: bool,
 }
 
 impl<'a, 'q, K, Q: ?Sized, M> Iterator for Find<'a, 'q, K, Q, M>
@@ -283,32 +294,58 @@ where
     type Item = (u32, &'a K);
 
     fn next(&mut self) -> Option<(u32, &'a K)> {
-        while let Some(current) = self.candidates.pop_front() {
+        let mut idx = 0;
+        let mut res = None;
+        while idx < self.candidates.len() {
+            let current = *self.candidates.get(idx).unwrap();
+            idx += 1;
             let BKNode {
                 key,
                 children,
                 max_child_distance,
+                flags,
             } = current;
             let distance_cutoff = max_child_distance.unwrap_or(0) + self.tolerance;
-            let cur_dist = self.metric.threshold_distance(self.key,
-                                                          current.key.borrow() as &Q,
-                                                          distance_cutoff);
+            let cur_dist = self.metric.threshold_distance(
+                self.key,
+                current.key.borrow() as &Q,
+                distance_cutoff,
+            );
             if let Some(dist) = cur_dist {
                 // Find the first child node within an appropriate distance
                 let min_dist = dist.saturating_sub(self.tolerance);
                 let max_dist = dist.saturating_add(self.tolerance);
-                for (dist, child_node) in &mut children.iter() {
-                    if min_dist <= *dist && *dist <= max_dist {
+                for (dist, child_node) in children.iter() {
+                    if (!self.remove || flags.borrow().0) && min_dist <= *dist && *dist <= max_dist
+                    {
                         self.candidates.push_back(child_node);
                     }
                 }
                 // If this node is also close enough to the key, yield it
-                if dist <= self.tolerance {
-                    return Some((dist, &key));
+                if self.remove {
+                    let removed = &mut flags.borrow_mut().1;
+                    if !*removed && dist <= self.tolerance {
+                        *removed = true;
+                        res = Some((dist, key));
+                        break;
+                    }
+                } else {
+                    if dist <= self.tolerance {
+                        res = Some((dist, key));
+                        break;
+                    }
                 }
             }
         }
-        None
+        for c in self.candidates.range(..idx).rev() {
+            let mut all_visited = c.flags.borrow().1;
+            for (_, child_node) in &mut c.children.iter() {
+                all_visited &= child_node.flags.borrow().0;
+            }
+            c.flags.borrow_mut().0 = all_visited;
+        }
+        self.candidates.drain(..idx);
+        res
     }
 }
 
@@ -399,10 +436,10 @@ mod tests {
         tree.add("boon");
         tree.add("cook");
         tree.add("cart");
-        assert_eq_sorted(tree.find("caqe", 1), &[(1, "cake"), (1, "cape")]);
-        assert_eq_sorted(tree.find("cape", 1), &[(1, "cake"), (0, "cape")]);
+        assert_eq_sorted(tree.find("caqe", 1, false), &[(1, "cake"), (1, "cape")]);
+        assert_eq_sorted(tree.find("cape", 1, false), &[(1, "cake"), (0, "cape")]);
         assert_eq_sorted(
-            tree.find("book", 1),
+            tree.find("book", 1, false),
             &[
                 (0, "book"),
                 (1, "books"),
@@ -411,8 +448,8 @@ mod tests {
                 (1, "cook"),
             ],
         );
-        assert_eq_sorted(tree.find("book", 0), &[(0, "book")]);
-        assert!(tree.find("foobar", 1).next().is_none());
+        assert_eq_sorted(tree.find("book", 0, false), &[(0, "book")]);
+        assert!(tree.find("foobar", 1, false).next().is_none());
     }
 
     #[test]
