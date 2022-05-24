@@ -316,7 +316,7 @@ where
                 let min_dist = dist.saturating_sub(self.tolerance);
                 let max_dist = dist.saturating_add(self.tolerance);
                 for (dist, child_node) in children.iter() {
-                    if (!self.remove || child_node.flags.borrow().0)
+                    if (!self.remove || !child_node.flags.borrow().0)
                         && min_dist <= *dist
                         && *dist <= max_dist
                     {
