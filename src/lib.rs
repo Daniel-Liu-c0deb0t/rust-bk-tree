@@ -2,6 +2,7 @@ pub mod metrics;
 
 use std::{
     borrow::Borrow,
+    cell::RefCell,
     collections::VecDeque,
     fmt::{Debug, Formatter, Result as FmtResult},
     iter::Extend,
@@ -41,8 +42,7 @@ struct BKNode<K> {
     #[cfg(not(feature = "enable-fnv"))]
     children: HashMap<u32, BKNode<K>>,
     max_child_distance: Option<u32>,
-    removed: bool,
-    subtree_removed: bool,
+    removed: RefCell<(bool, bool)>,
 }
 
 impl<K> BKNode<K> {
@@ -55,8 +55,7 @@ impl<K> BKNode<K> {
             #[cfg(not(feature = "enable-fnv"))]
             children: HashMap::default(),
             max_child_distance: None,
-            removed: false,
-            subtree_removed: false,
+            removed: RefCell::new((false, false)),
         }
     }
 
@@ -239,45 +238,45 @@ where
         self.find(key, 0).next().map(|(_, found_key)| found_key)
     }
 
-    pub fn remove<Q: ?Sized>(&mut self, key: &Q, tolerance: u32) -> Vec<(u32, &K)>
+    pub fn remove<Q: ?Sized>(&self, key: &Q, tolerance: u32) -> Vec<(u32, &K)>
     where
         K: Borrow<Q>,
         M: Metric<Q>,
     {
         fn rec<'a, Q: ?Sized, K: Borrow<Q>, M: Metric<Q>>(
-            curr: &'a mut BKNode<K>,
+            curr: &'a BKNode<K>,
             key: &Q,
             tolerance: u32,
             res: &mut Vec<(u32, &'a K)>,
             metric: &M,
         ) {
-            if curr.subtree_removed {
+            if curr.removed.borrow().0 {
                 return;
             }
 
             let distance_cutoff = curr.max_child_distance.unwrap_or(0) + tolerance;
             let cur_dist = metric.threshold_distance(key, curr.key.borrow() as &Q, distance_cutoff);
             if let Some(dist) = cur_dist {
-                if !curr.removed && dist <= tolerance {
+                if !curr.removed.borrow().1 && dist <= tolerance {
                     res.push((dist, &curr.key));
-                    curr.removed = true;
+                    curr.removed.borrow_mut().1 = true;
                 }
 
                 let min_dist = dist.saturating_sub(tolerance);
                 let max_dist = dist.saturating_add(tolerance);
-                let mut subtree_removed = curr.removed;
-                for (dist, child_node) in curr.children.iter_mut() {
-                    subtree_removed &= child_node.subtree_removed;
+                let mut subtree_removed = curr.removed.borrow().1;
+                for (dist, child_node) in curr.children.iter() {
+                    subtree_removed &= child_node.removed.borrow().0;
                     if min_dist <= *dist && *dist <= max_dist {
                         rec(child_node, key, tolerance, res, metric);
                     }
                 }
-                curr.subtree_removed = subtree_removed;
+                curr.removed.borrow_mut().0 = subtree_removed;
             }
         }
 
         let mut res = Vec::new();
-        if let Some(root) = &mut self.root {
+        if let Some(root) = &self.root {
             rec(root, key, tolerance, &mut res, &self.metric);
         }
         res
