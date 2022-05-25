@@ -195,11 +195,7 @@ where
     /// assert_eq!(tree.find("foo", 1).collect::<Vec<_>>(), vec![(0, &"foo"), (1, &"fop")]);
     /// assert!(tree.find("foz", 0).next().is_none());
     /// ```
-    pub fn find<'a, 'q, Q: ?Sized>(
-        &'a self,
-        key: &'q Q,
-        tolerance: u32,
-    ) -> Find<'a, 'q, K, Q, M>
+    pub fn find<'a, 'q, Q: ?Sized>(&'a self, key: &'q Q, tolerance: u32) -> Find<'a, 'q, K, Q, M>
     where
         K: Borrow<Q>,
         M: Metric<Q>,
@@ -240,23 +236,27 @@ where
         K: Borrow<Q>,
         M: Metric<Q>,
     {
-        self.find(key, 0)
-            .next()
-            .map(|(_, found_key)| found_key)
+        self.find(key, 0).next().map(|(_, found_key)| found_key)
     }
 
-    pub fn remove<Q: ?Sized>(&mut self, key: &Q, tolerance: u32) -> Vec<(u32, &K)> where K: Borrow<Q>, M: Metric<Q> {
-        fn rec<'a, Q: ?Sized, K: Borrow<Q>, M: Metric<Q>>(curr: &'a mut BKNode<K>, key: &Q, tolerance: u32, res: &mut Vec<(u32, &'a K)>, metric: &M) {
+    pub fn remove<Q: ?Sized>(&mut self, key: &Q, tolerance: u32) -> Vec<(u32, &K)>
+    where
+        K: Borrow<Q>,
+        M: Metric<Q>,
+    {
+        fn rec<'a, Q: ?Sized, K: Borrow<Q>, M: Metric<Q>>(
+            curr: &'a mut BKNode<K>,
+            key: &Q,
+            tolerance: u32,
+            res: &mut Vec<(u32, &'a K)>,
+            metric: &M,
+        ) {
             if curr.subtree_removed {
                 return;
             }
 
             let distance_cutoff = curr.max_child_distance.unwrap_or(0) + tolerance;
-            let cur_dist = metric.threshold_distance(
-                key,
-                curr.key.borrow() as &Q,
-                distance_cutoff,
-            );
+            let cur_dist = metric.threshold_distance(key, curr.key.borrow() as &Q, distance_cutoff);
             if let Some(dist) = cur_dist {
                 if !curr.removed && dist <= tolerance {
                     res.push((dist, &curr.key));
@@ -348,9 +348,7 @@ where
                 let min_dist = dist.saturating_sub(self.tolerance);
                 let max_dist = dist.saturating_add(self.tolerance);
                 for (dist, child_node) in children.iter() {
-                    if min_dist <= *dist
-                        && *dist <= max_dist
-                    {
+                    if min_dist <= *dist && *dist <= max_dist {
                         self.candidates.push_back(child_node);
                     }
                 }
